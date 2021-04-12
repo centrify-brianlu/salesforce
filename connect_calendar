@@ -1,0 +1,112 @@
+from Salesforce.authentication import client as client_sf
+from transform import Transform
+from cache_calendars import Cache, storage
+from pprint import pprint
+import json, re
+import joblib
+
+salesforce_query = client_sf.sobjects.query(" \
+        SELECT id, casenumber, subject, description, lastmodifieddate, lastmodifiedbyid, contactemail, next_steps__c, link_to_this_case__c, jira_link__c, jira_id__c, account_name_formula__c \
+        FROM case \
+        WHERE ownerid = '0051E00000ET3ufQAD' \
+        AND status IN ('Awaiting Info', 'New', 'Updated', 'Researching', 'In Development', 'Awaiting Prod Mgmt', 'Awaiting Release', 'Awaiting Closure', 'Long-term Waiting') \
+        AND lastmodifiedbyid = '0051E00000ET3ufQAD' \
+        AND next_steps__c != null \
+        ")
+
+for attribute in salesforce_query:
+
+    if Transform(attribute).next_steps__c == None: continue
+    else:
+        account_name_formula__c = Transform(attribute).account_name_formula__c
+        casenumber = Transform(attribute).casenumber
+        contactemail = Transform(attribute).contactemail
+        description = Transform(attribute).description
+        case_id = Transform(attribute).id
+        jira_id__c = Transform(attribute).jira_id__c
+        jira_link__c = Transform(attribute).jira_link__c
+        lastmodifieddate = Transform(attribute).lastmodifieddate
+        lastmodifiedbyid = Transform(attribute).lastmodifiedbyid
+        link_to_this_case__c = Transform(attribute).link_to_this_case__c
+        next_steps__c = Transform(attribute).next_steps__c
+        subject = Transform(attribute).subject
+        _category = next_steps__c[0]
+        _date_next = next_steps__c[1]
+
+        exist = Cache.check_calendar(case_id, {'_date_next': _date_next, 'lastmodifieddate': lastmodifieddate, 'account_name_formula__c': account_name_formula__c})
+
+        if exist[0] == 0:
+            html = '''
+                <html>
+                <head>
+                    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">
+                    <meta content=\"text/html; charset=us-ascii\">
+                    <meta name=\"ProgId\" content=\"Word.Document\">
+                    <meta name=\"Generator\" content=\"Microsoft Word 15\">
+                    <meta name=\"Originator\" content=\"Microsoft Word 15\">
+                    <style>
+                        <!--
+                        @font-face
+                            {{font-family:\"Cambria Math\"}}
+                        @font-face
+                            {{font-family:Calibri}}
+                        p.MsoNormal, li.MsoNormal, div.MsoNormal
+                            {{margin:0in;font-size:11.0pt;font-family:\"Calibri\",sans-serif}}
+                        a:link, span.MsoHyperlink
+                            {{color:#0563C1;text-decoration:underline}}
+                        a:visited, span.MsoHyperlinkFollowed
+                            {{color:#954F72;text-decoration:underline}}
+                        p.msonormal0, li.msonormal0, div.msonormal0
+                            {{margin-right:0in;margin-left:0in;font-size:11.0pt;font-family:\"Calibri\",sans-serif}}
+                        span.EmailStyle18
+                            {{font-family:\"Calibri\",sans-serif;color:windowtext}}
+                        span.SpellE{{}}.MsoChpDefault
+                            {{font-size:10.0pt;font-family:\"Calibri\",sans-serif}}@page WordSection1{{margin:1.0in 1.0in 1.0in 1.0in}}div.WordSection1{{}}
+                        -->
+                    </style>
+                </head>
+                <body lang=\"EN-US\" link=\"#0563C1\" vlink=\"#954F72\" style=\"\">
+                    <div class=\"WordSection1\">
+                        <p class=\"MsoNormal\"><b style=\"\"><span style=\"font-size:16.0pt\">{0}</span></b></p>
+                        <p class=\"MsoNormal\"><b style=\"\"><span style=\"font-size:11.0pt\"><a href=\"{1}\">{2}</a> / <a href=\"{3}\">{4}</a></b></p>
+                        <p class=\"MsoNormal\">&nbsp;</p>
+                        <p class=\"MsoNormal\">{5}</p>
+                    </div>
+                </body>
+                </html>
+                '''.format(subject, link_to_this_case__c, casenumber, jira_link__c, jira_id__c,description)
+            json = {
+                "subject":'%s: %s' % (_category, account_name_formula__c.lower()),
+                "reminderMinutesBeforeStart": "120",
+                "isReminderOn": "true",
+                "categories": [_category],
+                "body": {
+                    "contentType": "HTML",
+                    "content": html
+                    },
+                "start": {
+                    "dateTime": _date_next,
+                    "timeZone": "Pacific Standard Time"
+                    },
+                "end": {
+                    "dateTime": _date_next,
+                    "timeZone": "Pacific Standard Time"
+                    },
+                "responseStatus": {
+                    "response": "none",
+                    "time": "0001-01-01T00:00:00Z"
+                    },
+                "location": {
+                    "displayName": contactemail,
+                    "locationType": "default",
+                    "uniqueId": contactemail,
+                    "uniqueIdType": "private"}
+                    }
+
+            response = Cache.post_calendar(html,json)
+            storage.update({case_id: {'_date_next': _date_next, 'lastmodifieddate': lastmodifieddate, 'iCalUId': response[0], 'start/dateTime': response[1]}})
+
+        else:
+            storage.update({case_id: {'_date_next': _date_next, 'lastmodifieddate': lastmodifieddate, 'iCalUId': exist[1], 'start/dateTime': exist[2]}})
+
+Cache.write_calendar(storage)
